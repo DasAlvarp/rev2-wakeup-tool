@@ -77,7 +77,9 @@ namespace GGXrdWakeupDPUtil
         const int recordFlip = 0;
         Regex inputregex = new Regex(@"!?[1-9]{1}[PKSHD]{0,5}");
         Regex whitespaceregex = new Regex(@"\s+");
-        int[] directions = new[] { 0b0110, 0b0010, 0b1010, 0b0100, 0b0000, 0b1000, 0b0101, 0b0001, 0b1001 };
+
+        //0b0110, 0b0010, 0b1010, 0b0100, 0b0000, 0b1000, 0b0101, 0b0001, 0b1001 are the indeces. Let's convert these from binary and see what happens.
+        int[] directions = new[]{ 0b0110, 0b0010, 0b1010, 0b0100, 0b0000, 0b1000, 0b0101, 0b0001, 0b1001 };
         Frida.DeviceManager devman;
         Frida.Device localdev;
         Frida.Process ggproc;
@@ -121,6 +123,8 @@ setTimeout( function () {
         CancellationToken token, idtoken;
         private bool fallbackp1 = false;
         private bool fallbackp2 = false;
+
+        //one frame of input. If it's the result, then wakeupframemask is added.
         private short singleInputParse(string input)
         {
             if (inputregex.IsMatch(input))
@@ -143,28 +147,35 @@ setTimeout( function () {
                     switch (button)
                     {
                         case 'P':
+                        case 'p':
                             result |= (int)Buttons.P;
                             break;
                         case 'K':
+                        case 'k':
                             result |= (int)Buttons.K;
                             break;
                         case 'S':
+                        case 's':
                             result |= (int)Buttons.S;
                             break;
                         case 'H':
+                        case 'h':
                             result |= (int)Buttons.H;
                             break;
                         case 'D':
+                        case 'd':
                             result |= (int)Buttons.D;
                             break;
                     }
                 }
                 return (short)result;
-            } else
+            }
+            else
             {
                 return -1;
             }
         }
+
         public MainWindow()
         {
             InitializeComponent();
@@ -310,7 +321,8 @@ setTimeout( function () {
 
         private string readAnimString(int player)
         {
-            if (player == 1) {
+            if (player == 1)
+            {
                 var addr = (IntPtr)(msggprocess.Read<int>((IntPtr)P1AnimOffsets[0]));
                 foreach (int offset in P1AnimOffsets.GetRange(1, 5)) {
                     addr = IntPtr.Add(addr, offset);
@@ -318,6 +330,7 @@ setTimeout( function () {
                 }
                 return msggprocess.ReadString(IntPtr.Add(addr, P1AnimOffsets[6]), false, 32);
             }
+
             if (player == 2)
             {
                 var addr = (IntPtr)(msggprocess.Read<int>((IntPtr)P2AnimOffsets[0]));
@@ -330,6 +343,7 @@ setTimeout( function () {
             }
             return "";
         }
+
         private string readFallbackAnimString(int player)
         { 
             if (player == 1)
@@ -355,6 +369,7 @@ setTimeout( function () {
 
             return "";
         }
+
         private void setDummyID()
         {
             var idx = msggprocess.Read<byte>((IntPtr)P2IDOffset);
@@ -369,6 +384,13 @@ setTimeout( function () {
             }
             currentDummyId = idx;
         }
+
+        private int[] FindAllIndexOf(short [] a, Predicate<short> match)
+        {
+            short[] subArray = Array.FindAll<short>(a, match);
+            return (from short item in subArray select Array.IndexOf(a, item)).ToArray();
+        }
+
         private void enableButton_Click(object sender, RoutedEventArgs e)
         {
             var text = inputTextBox.Text;
@@ -385,21 +407,34 @@ setTimeout( function () {
                 }
             }
             var ggwindow = msggprocess.Windows.MainWindow;
-            var wakeupframeidx = inputnums.FindLastIndex(delegate (short n)
+            int[] wakeupframeids =
+                FindAllIndexOf(inputnums.ToArray(), 
+                    delegate (short n)
+                    {
+                        return n >= 0x200;
+                    }
+                );
+
+
+            if (wakeupframeids[0] < 0)//flipped to force error
             {
-                return n >= 0x200;
-            });
-            if (wakeupframeidx < 0)
-            {
-                MessageBox.Show("No ! frame specified.  See the readme for more information.");
+                MessageBox.Show("No ! frame specified.  See the readme for more information." + wakeupframeids[0]);
                 return;
             }
-            inputnums[wakeupframeidx] -= wakeupFrameMask;
+
+            for(int x = 0; x < wakeupframeids.Length; x++)
+            {
+                inputnums[wakeupframeids[x]] -= wakeupFrameMask;
+
+            }
+
             var slotidx = -1;
+
             if ((bool)Slot1R.IsChecked)
             {
                 slotidx = 0;
-            } else if ((bool)Slot2R.IsChecked)
+            }
+            else if ((bool)Slot2R.IsChecked)
             {
                 slotidx = 1;
             }
@@ -407,10 +442,12 @@ setTimeout( function () {
             {
                 slotidx = 2;
             }
+
             if (slotidx >= 0)
             {
                 overwriteSlot(slotidx, inputnums);
-            } else
+            }
+            else
             {
                 MessageBox.Show("No slot chosen.  Please make sure you picked a slot to overwrite.");
                 return;
@@ -436,9 +473,10 @@ setTimeout( function () {
             ggwindow.Activate();
             source = new CancellationTokenSource();
             token = source.Token;
-            Task.Run(() => enableLoop(fallbackp2, wakeupframeidx));
+            Task.Run(() => enableLoop(fallbackp2, wakeupframeids));
 
         }
+
         private void setFlip()
         {
             var addr = (IntPtr)(msggprocess.Read<int>((IntPtr)P1P2FlipOffsets[0]));
@@ -456,26 +494,32 @@ setTimeout( function () {
             var header = new List<short> {0, 0, (short)inputs.Count, 0 };
             msggprocess.Write((IntPtr)addr, header.Concat(inputs).ToArray());
         }
-        private void enableLoop(bool useFallback, int wakeupframeidx)
+
+        
+        private void enableLoop(bool useFallback, int[] wakeupframeidx)
         {
             idsource.Cancel();
+            Random randy = new Random();
+            int wakeupIndex = 0;
             if (useFallback)
             {
                 while (!token.IsCancellationRequested)
                 {
+                    wakeupIndex = randy.Next(0, wakeupframeidx.Length);
+
                     try
                     {
                         int wakeuptiming = 0;
                         if (facedown == readFallbackAnimString(2))
                         {
                             wakeuptiming = nameWakeupDataList[currentDummyId].faceDownFrames;
-                            Task framewait = Task.Run(() => waitFrames(wakeuptiming - wakeupframeidx - 1));
+                            Task framewait = Task.Run(() => waitFrames(wakeuptiming - wakeupframeidx[wakeupIndex] - 1));
                             framewait.Wait();
                         }
                         else if (faceup == readFallbackAnimString(2))
                         {
                             wakeuptiming = nameWakeupDataList[currentDummyId].faceUpFrames;
-                            Task framewait = Task.Run(() => waitFrames(wakeuptiming - wakeupframeidx - 1));
+                            Task framewait = Task.Run(() => waitFrames(wakeuptiming - wakeupframeidx[wakeupIndex] - 1));
                             framewait.Wait();
                         }
                         if (wakeuptiming == 0)
@@ -503,19 +547,22 @@ setTimeout( function () {
             {
                 while (!token.IsCancellationRequested)
                 {
-                    try
+                    wakeupIndex = randy.Next(0, wakeupframeidx.Length);
+
+                    try           
+
                     {
                         int wakeuptiming = 0;
                         if (facedown == readAnimString(2))
                         {
                             wakeuptiming = nameWakeupDataList[currentDummyId].faceDownFrames;
-                            Task framewait = Task.Run(() => waitFrames(wakeuptiming - wakeupframeidx - 1));
+                            Task framewait = Task.Run(() => waitFrames(wakeuptiming - wakeupframeidx[wakeupIndex] - 1));
                             framewait.Wait();
                         }
                         else if (faceup == readAnimString(2))
                         {
                             wakeuptiming = nameWakeupDataList[currentDummyId].faceUpFrames;
-                            Task framewait = Task.Run(() => waitFrames(wakeuptiming - wakeupframeidx - 1));
+                            Task framewait = Task.Run(() => waitFrames(wakeuptiming - wakeupframeidx[wakeupIndex] - 1));
                             framewait.Wait();
                         }
                         if (wakeuptiming == 0)
